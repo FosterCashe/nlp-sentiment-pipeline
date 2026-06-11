@@ -2,21 +2,29 @@
 review_analyzer_pipeline.py
 ----------------------------
 Production warehouse version of the NLP sentiment analysis pipeline.
-Pulls product reviews directly from Snowflake, runs sentiment classification,
+Supports both Snowflake and BigQuery via the --warehouse flag.
+Pulls product reviews directly from your warehouse, runs sentiment classification,
 keyword extraction, and topic modeling, then writes results back to a
 destination table for downstream BI/dashboard consumption.
 
 Setup:
-    1. Copy .env.example to .env and fill in your Snowflake credentials
+    1. Copy .env.example to .env and fill in your credentials
     2. pip install -r requirements.txt
-    3. python review_analyzer_pipeline.py --source_table RAW.REVIEWS.YOTPO --dest_table ANALYTICS.NLP.SENTIMENT_RESULTS
+    3. See usage examples below
 
 Usage:
-    python review_analyzer_pipeline.py \
-        --source_table RAW.REVIEWS.YOTPO \
-        --review_col REVIEW_BODY \
-        --dest_table ANALYTICS.NLP.SENTIMENT_RESULTS \
-        --n_topics 5
+
+    Snowflake:
+        python review_analyzer_pipeline.py \
+            --warehouse snowflake \
+            --source_table RAW.REVIEWS.YOTPO \
+            --dest_table ANALYTICS.NLP.SENTIMENT_RESULTS
+
+    BigQuery:
+        python review_analyzer_pipeline.py \
+            --warehouse bigquery \
+            --source_table myproject.raw_reviews.yotpo \
+            --dest_table myproject.analytics.sentiment_results
 """
 
 import argparse
@@ -24,9 +32,9 @@ import os
 import re
 import logging
 from datetime import datetime
+from abc import ABC, abstractmethod
 
 import pandas as pd
-import snowflake.connector
 from dotenv import load_dotenv
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 from sklearn.decomposition import LatentDirichletAllocation
@@ -37,54 +45,128 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger(__name__)
 
 
-# ── Snowflake Connection ──────────────────────────────────────────────────────
+# ── Warehouse Connectors ──────────────────────────────────────────────────────
 
-def get_snowflake_connection():
-    """Create and return a Snowflake connection using environment variables."""
-    return snowflake.connector.connect(
-        user=os.environ["SNOWFLAKE_USER"],
-        password=os.environ["SNOWFLAKE_PASSWORD"],
-        account=os.environ["SNOWFLAKE_ACCOUNT"],
-        warehouse=os.environ["SNOWFLAKE_WAREHOUSE"],
-        database=os.environ["SNOWFLAKE_DATABASE"],
-        schema=os.environ["SNOWFLAKE_SCHEMA"],
-    )
+class WarehouseConnector(ABC):
+    """Abstract base class for warehouse connectors."""
 
+    @abstractmethod
+    def fetch(self, source_table: str, review_col: str) -> pd.DataFrame:
+        pass
 
-def fetch_reviews(conn, source_table: str, review_col: str) -> pd.DataFrame:
-    """Pull all reviews from the specified source table."""
-    query = f"""
-        SELECT *
-        FROM {source_table}
-        WHERE {review_col} IS NOT NULL
-          AND TRIM({review_col}) != ''
-    """
-    log.info(f"Fetching reviews from {source_table}...")
-    cursor = conn.cursor()
-    cursor.execute(query)
-    df = cursor.fetch_pandas_all()
-    log.info(f"Fetched {len(df):,} reviews.")
-    return df
+    @abstractmethod
+    def write(self, df: pd.DataFrame, dest_table: str) -> None:
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
+        pass
 
 
-def write_results(conn, df: pd.DataFrame, dest_table: str) -> None:
-    """Write sentiment results back to Snowflake destination table."""
-    from snowflake.connector.pandas_tools import write_pandas
+class SnowflakeConnector(WarehouseConnector):
+    """Snowflake connector using environment variable credentials."""
 
-    log.info(f"Writing {len(df):,} rows to {dest_table}...")
-    success, nchunks, nrows, _ = write_pandas(
-        conn,
-        df,
-        table_name=dest_table.split(".")[-1],
-        database=dest_table.split(".")[0] if dest_table.count(".") >= 2 else None,
-        schema=dest_table.split(".")[1] if dest_table.count(".") >= 2 else None,
-        auto_create_table=True,
-        overwrite=True,
-    )
-    if success:
-        log.info(f"Successfully wrote {nrows:,} rows in {nchunks} chunk(s).")
+    def __init__(self):
+        import snowflake.connector
+        self.conn = snowflake.connector.connect(
+            user=os.environ["SNOWFLAKE_USER"],
+            password=os.environ["SNOWFLAKE_PASSWORD"],
+            account=os.environ["SNOWFLAKE_ACCOUNT"],
+            warehouse=os.environ["SNOWFLAKE_WAREHOUSE"],
+            database=os.environ["SNOWFLAKE_DATABASE"],
+            schema=os.environ["SNOWFLAKE_SCHEMA"],
+        )
+        log.info("Connected to Snowflake.")
+
+    def fetch(self, source_table: str, review_col: str) -> pd.DataFrame:
+        query = f"""
+            SELECT *
+            FROM {source_table}
+            WHERE {review_col} IS NOT NULL
+              AND TRIM({review_col}) != ''
+        """
+        log.info(f"Fetching reviews from {source_table}...")
+        cursor = self.conn.cursor()
+        cursor.execute(query)
+        df = cursor.fetch_pandas_all()
+        log.info(f"Fetched {len(df):,} reviews.")
+        return df
+
+    def write(self, df: pd.DataFrame, dest_table: str) -> None:
+        from snowflake.connector.pandas_tools import write_pandas
+        log.info(f"Writing {len(df):,} rows to {dest_table}...")
+        success, nchunks, nrows, _ = write_pandas(
+            self.conn,
+            df,
+            table_name=dest_table.split(".")[-1],
+            database=dest_table.split(".")[0] if dest_table.count(".") >= 2 else None,
+            schema=dest_table.split(".")[1] if dest_table.count(".") >= 2 else None,
+            auto_create_table=True,
+            overwrite=True,
+        )
+        if success:
+            log.info(f"Successfully wrote {nrows:,} rows in {nchunks} chunk(s).")
+        else:
+            raise RuntimeError("Snowflake write failed.")
+
+    def close(self) -> None:
+        self.conn.close()
+        log.info("Snowflake connection closed.")
+
+
+class BigQueryConnector(WarehouseConnector):
+    """BigQuery connector using a service account JSON key."""
+
+    def __init__(self):
+        from google.cloud import bigquery
+        from google.oauth2 import service_account
+
+        key_path = os.environ.get("BIGQUERY_KEY_PATH")
+        project = os.environ["BIGQUERY_PROJECT"]
+
+        if key_path:
+            credentials = service_account.Credentials.from_service_account_file(key_path)
+            self.client = bigquery.Client(project=project, credentials=credentials)
+        else:
+            # Falls back to application default credentials (e.g. gcloud auth)
+            self.client = bigquery.Client(project=project)
+
+        self.project = project
+        log.info(f"Connected to BigQuery project: {project}")
+
+    def fetch(self, source_table: str, review_col: str) -> pd.DataFrame:
+        query = f"""
+            SELECT *
+            FROM `{source_table}`
+            WHERE {review_col} IS NOT NULL
+              AND TRIM(CAST({review_col} AS STRING)) != ''
+        """
+        log.info(f"Fetching reviews from {source_table}...")
+        df = self.client.query(query).to_dataframe()
+        log.info(f"Fetched {len(df):,} reviews.")
+        return df
+
+    def write(self, df: pd.DataFrame, dest_table: str) -> None:
+        from google.cloud import bigquery
+        log.info(f"Writing {len(df):,} rows to {dest_table}...")
+        job_config = bigquery.LoadJobConfig(write_disposition="WRITE_TRUNCATE")
+        job = self.client.load_table_from_dataframe(df, dest_table, job_config=job_config)
+        job.result()
+        log.info(f"Successfully wrote {len(df):,} rows to {dest_table}.")
+
+    def close(self) -> None:
+        self.client.close()
+        log.info("BigQuery connection closed.")
+
+
+def get_connector(warehouse: str) -> WarehouseConnector:
+    """Factory function — returns the correct connector based on --warehouse flag."""
+    if warehouse == "snowflake":
+        return SnowflakeConnector()
+    elif warehouse == "bigquery":
+        return BigQueryConnector()
     else:
-        raise RuntimeError("Snowflake write failed.")
+        raise ValueError(f"Unsupported warehouse: {warehouse}. Choose 'snowflake' or 'bigquery'.")
 
 
 # ── Text Preprocessing ────────────────────────────────────────────────────────
@@ -110,7 +192,6 @@ def analyze_sentiment(reviews: pd.Series) -> pd.Series:
             return "negative"
         else:
             return "neutral"
-
     return reviews.apply(classify)
 
 
@@ -150,18 +231,20 @@ def assign_topic(review: str, lda, vectorizer) -> int:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="NLP Sentiment Pipeline (Snowflake)")
-    parser.add_argument("--source_table", required=True, help="Fully qualified source table (DB.SCHEMA.TABLE)")
+    parser = argparse.ArgumentParser(description="NLP Sentiment Pipeline (Snowflake + BigQuery)")
+    parser.add_argument("--warehouse", default="snowflake", choices=["snowflake", "bigquery"],
+                        help="Target warehouse (default: snowflake)")
+    parser.add_argument("--source_table", required=True, help="Fully qualified source table")
     parser.add_argument("--review_col", default="REVIEW_BODY", help="Column containing review text")
     parser.add_argument("--dest_table", required=True, help="Fully qualified destination table for results")
     parser.add_argument("--n_topics", type=int, default=5, help="Number of LDA topics")
     args = parser.parse_args()
 
-    conn = get_snowflake_connection()
+    connector = get_connector(args.warehouse)
 
     try:
         # Fetch
-        df = fetch_reviews(conn, args.source_table, args.review_col)
+        df = connector.fetch(args.source_table, args.review_col)
 
         # Preprocess
         df['CLEANED_REVIEW'] = df[args.review_col].fillna("").apply(preprocess_text)
@@ -177,7 +260,7 @@ def main():
         for word, score in extract_keywords(df['CLEANED_REVIEW']):
             log.info(f"  {word}: {score:.3f}")
 
-        # Topic Modeling — assign dominant topic per review
+        # Topic Modeling
         count_vec = CountVectorizer(stop_words='english')
         doc_term_matrix = count_vec.fit_transform(df['CLEANED_REVIEW'])
         lda = LatentDirichletAllocation(n_components=args.n_topics, random_state=42)
@@ -195,17 +278,17 @@ def main():
         for i, label in topic_labels.items():
             log.info(f"  Topic {i + 1}: {label}")
 
-        # Add pipeline metadata
+        # Pipeline metadata
         df['PIPELINE_RUN_AT'] = datetime.utcnow().isoformat()
         df['SOURCE_TABLE'] = args.source_table
 
         # Write results
-        output_cols = [args.review_col, 'CLEANED_REVIEW', 'SENTIMENT', 'DOMINANT_TOPIC', 'TOPIC_KEYWORDS', 'PIPELINE_RUN_AT', 'SOURCE_TABLE']
-        write_results(conn, df[output_cols], args.dest_table)
+        output_cols = [args.review_col, 'CLEANED_REVIEW', 'SENTIMENT', 'DOMINANT_TOPIC',
+                       'TOPIC_KEYWORDS', 'PIPELINE_RUN_AT', 'SOURCE_TABLE']
+        connector.write(df[output_cols], args.dest_table)
 
     finally:
-        conn.close()
-        log.info("Snowflake connection closed.")
+        connector.close()
 
 
 if __name__ == "__main__":
