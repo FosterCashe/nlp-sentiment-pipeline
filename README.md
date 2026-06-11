@@ -1,6 +1,6 @@
 # NLP Sentiment Analysis Pipeline
 
-A Python/SQL pipeline that classifies sentiment and extracts themes from product reviews at scale, delivering actionable insights through a self-service dashboard.
+A Python/SQL pipeline that classifies sentiment and extracts themes from product reviews at scale, delivering actionable insights through a self-service dashboard. Supports both local CSV analysis and production warehouse deployments on Snowflake and BigQuery.
 
 ## Overview
 
@@ -11,9 +11,10 @@ Built to replace manual review analysis across multiple DTC e-commerce accounts.
 | File | Description |
 |------|-------------|
 | `review_analyzer.py` | Local version — ingests CSV exports from Yotpo, Okendo, etc. |
-| `review_analyzer_pipeline.py` | Production version — pulls from Snowflake, writes results back to warehouse |
+| `review_analyzer_pipeline.py` | Production version — pulls from Snowflake or BigQuery, writes results back to warehouse |
+| `customer_reviews_sample.csv` | Sample dataset for testing |
 | `requirements.txt` | Python dependencies |
-| `.env.example` | Snowflake credential template (copy to `.env`, never commit) |
+| `.env.example` | Credential template for Snowflake and BigQuery (copy to `.env`, never commit) |
 
 ## Tech Stack
 
@@ -34,24 +35,32 @@ Built to replace manual review analysis across multiple DTC e-commerce accounts.
 
 ## Usage
 
-**Local (CSV):**
-```python
-python review_analyzer.py --input customer_reviews.csv --review_col "reviews/content"
-```
+**Try it with sample data:**
 
-**Warehouse (Snowflake):**
-```python
-cp .env.example .env  # fill in your credentials
-python review_analyzer_pipeline.py \
-  --source_table RAW.REVIEWS.YOTPO \
-  --dest_table ANALYTICS.NLP.SENTIMENT_RESULTS
-```
+    python review_analyzer.py --input customer_reviews_sample.csv --review_col "reviews/content"
+
+**Local (CSV):**
+
+    python review_analyzer.py --input customer_reviews.csv --review_col "reviews/content"
+
+**Warehouse — Snowflake:**
+
+    cp .env.example .env
+    python review_analyzer_pipeline.py \
+      --warehouse snowflake \
+      --source_table RAW.REVIEWS.YOTPO \
+      --dest_table ANALYTICS.NLP.SENTIMENT_RESULTS
+
+**Warehouse — BigQuery:**
+
+    cp .env.example .env
+    python review_analyzer_pipeline.py \
+      --warehouse bigquery \
+      --source_table myproject.raw_reviews.yotpo \
+      --dest_table myproject.analytics.sentiment_results
 
 ## Impact
 
 - Processed thousands of reviews across multiple DTC client accounts
 - Insights directly informed product development and feature prioritization
 - Replaced hours of manual tagging with an automated, repeatable pipeline
-
-**Try it with sample data:**
-python review_analyzer.py --input customer_reviews_sample.csv --review_col "reviews/content"
