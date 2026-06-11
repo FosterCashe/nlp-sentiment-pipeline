@@ -10,7 +10,7 @@ Built to replace manual review analysis across multiple DTC e-commerce accounts.
 
 | File | Description |
 |------|-------------|
-| `review_analyzer.py` | Local version — ingests CSV exports from Klaviyo, Yotpo, etc. |
+| `review_analyzer.py` | Local version — ingests CSV exports from Yotpo, Okendo, etc. |
 | `review_analyzer_pipeline.py` | Production version — pulls from Snowflake, writes results back to warehouse |
 | `requirements.txt` | Python dependencies |
 | `.env.example` | Snowflake credential template (copy to `.env`, never commit) |
