@@ -59,6 +59,25 @@ Built to replace manual review analysis across multiple DTC e-commerce accounts.
       --source_table myproject.raw_reviews.yotpo \
       --dest_table myproject.analytics.sentiment_results
 
+## Taking It Further: AI-Powered Advertiser Insights
+
+One of the most underrated truths in DTC marketing: **customers are usually better copywriters than the brand.**
+
+Advertisers spend weeks workshopping headlines and angles, when the raw material already exists in their reviews. Phrases like *"my coworkers keep asking what I'm doing differently"* or *"I've tried every eye cream on the market and this is the best"* are ready-made ad copy — they just need to be found.
+
+This pipeline includes an optional `--generate_insights` flag that pipes the classified review data into Claude to surface:
+
+- **Emotional themes** — the underlying drivers behind why people love or reject a product, beyond surface-level keywords
+- **Standout customer phrases** — verbatim language from real buyers that works as social proof or headline copy
+- **Ad copy angles** — fully written headline and body copy based on what customers actually say
+- **Objection mapping** — the top complaints from negative reviews that smart ads should proactively address
+
+The output turns a sentiment dataset into a creative brief. Run it with:
+
+    python review_analyzer.py --input customer_reviews_sample.csv --review_col "reviews/content" --generate_insights
+
+Requires an `ANTHROPIC_API_KEY` in your `.env` file.
+
 ## Impact
 
 - Processed thousands of reviews across multiple DTC client accounts
