@@ -52,3 +52,6 @@ python review_analyzer_pipeline.py \
 - Processed thousands of reviews across multiple DTC client accounts
 - Insights directly informed product development and feature prioritization
 - Replaced hours of manual tagging with an automated, repeatable pipeline
+
+**Try it with sample data:**
+python review_analyzer.py --input customer_reviews_sample.csv --review_col "reviews/content"
