@@ -35,3 +35,20 @@ Built to replace manual review analysis across multiple DTC e-commerce accounts.
 ## Usage
 
 **Local (CSV):**
+```python
+python review_analyzer.py --input customer_reviews.csv --review_col "reviews/content"
+```
+
+**Warehouse (Snowflake):**
+```python
+cp .env.example .env  # fill in your credentials
+python review_analyzer_pipeline.py \
+  --source_table RAW.REVIEWS.YOTPO \
+  --dest_table ANALYTICS.NLP.SENTIMENT_RESULTS
+```
+
+## Impact
+
+- Processed thousands of reviews across multiple DTC client accounts
+- Insights directly informed product development and feature prioritization
+- Replaced hours of manual tagging with an automated, repeatable pipeline
